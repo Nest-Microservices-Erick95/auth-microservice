@@ -1,0 +1,54 @@
+#para entender cosas de esto ver el curso de spring con docker y kubernetes, ahi se ve docker y kubernetes a profundidad
+
+#dependencias, solo generar la carpeta de node_modules
+FROM node:18.20.4-alpine3.20 as deps
+
+WORKDIR /usr/src/app
+
+COPY package.json .
+COPY package-lock.json .
+
+RUN npm install
+
+#---------------------------------------------------------------------------
+
+#builder, construye la aplicacion
+FROM node:18.20.4-alpine3.20 as build
+
+WORKDIR /usr/src/app
+
+#copiar desde deps los modulos de node
+COPY --from=deps /usr/src/app/node_modules ./node_modules
+
+COPY . .
+
+#genera el cliente de prisma y lo almacena en el node_modules, los cuales se copian a la parte final de abajo con la carpeta node_modules, y esto se debe hacer antes de crear la carpeta de dist con el npm run build de abajo
+RUN npx prisma generate
+
+#crear la carpeta dist donde se tiene el codigo de produccion
+RUN npm run build
+
+#para dejar solo las dependencias de produccion, aunque esto es opcional pero disminuye el peso de la imagen
+RUN npm ci -f --only=production && npm cache clean --force
+
+#---------------------------------------------------------------------------
+
+#crear la imagen final
+FROM node:18.20.4-alpine3.20 as prod
+
+WORKDIR /usr/src/app
+
+#copiar la carpeta de node_modules ya que es necesaria para ejecutar el codigo de produccion de la carpeta dist
+COPY --from=build /usr/src/app/node_modules ./node_modules
+
+COPY --from=build /usr/src/app/dist ./dist
+
+#la siguiente variable de entorno es opcional pero pues indica que estamos en produccion, se suele poner en produccion
+ENV NODE_ENV=production
+
+#con lo siguiente creamos el usuario llamado node (puede tener cualquier nombre) y ese será el que ejecutará el comando del CMD de abajo, osea el que ejecutará nuestra aplicacion en el contenedor de esta imagen, esto es opcional pero se puso como medida de seguridad porque si no ponemos esto entonces lo ejecutaría el usuario root que viene con la imagen de node del FROM de arriba, pero si hacemos eso entonces alguien podría entrar a nuestro contenedor y detener la ejecucion de nuestra aplicacion o borrar algo y cosas asi, pero si lo hacemos con un usuario creado aqui que no sea el root entonces ya no tendríamos ese problema, esto como medida de seguridad pero pues es opcional, esto es asi como se explicó porque con esto tambien nos movemos a este usuario y dentro del contenedor ya no estaremos con el usuario de root, y pues este usuario de node no tiene privilegios para eliminar cosas y asi, en cambio el usuario de root sí tiene esos privilegios y por eso asi ya nos evitaríamos que alguien entre a nuestro contenedor y borre cosas por ejemplo
+USER node
+
+EXPOSE 3000
+
+CMD ["node", "dist/main.js"]
